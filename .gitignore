@@ -1,0 +1,14 @@
+.idea/
+.venv/
+
+__pycache__/
+*.pyc
+
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.json
+CLAUDE.local.md
+
+/code_filed/
+/input/
+/data/
