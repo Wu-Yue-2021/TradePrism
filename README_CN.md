@@ -25,7 +25,7 @@ python trading_record_manager.py
 - 价格波动敏感性分析（调仓计算时显示不同价格下的结果）
 - IRR 内部收益率分析（支持做T交易识别）
 - 持仓历史分析（按日期范围查看仓位变化）
-- 颜色层次显示（做T交易不高亮、操作列显示配对记录序号，如 SELL-324）
+- 颜色层次显示：打印记录时调用 IRR 分析器的匹配引擎，自动匹配买卖堆并区分做T/战略交易（纯做T配对降色不高亮、操作列显示配对记录序号，如 SELL-324）
 - 打印记录含费用列（NEW/BUY/SELL 计算手续费，其余操作显示 "-"）
 - 数据存储在 `data/trades.json`
 
@@ -81,7 +81,13 @@ python trading_record_manager.py
 - 代码更简洁，无死循环风险
 - 支持交叉匹配开关（`T_allow_cross` 参数）
 
-详见 [做T匹配算法](file:///D:/Program/Python/Finance/tools/docs/t_trade_matching_algorithm.md)
+详见 [做T匹配算法](docs/t_trade_matching_algorithm.md)
+
+**匹配引擎的显示端复用：**
+交易记录管理工具在打印记录处（筛选查询、修改/新增、批量删除前的展示，即 `print_records(color_hierarchy=True)`）内部调用 `Display._build_match_info()`：按品种分组，复用 `TradeAnalyzer.run()` 做同一套做T（动态堆匹配）+ 战略（LIFO）买卖堆自动匹配，输出用于颜色层次显示——
+- 纯做T配对（未混战略配对）的记录 → 降色不高亮（`DARK_COLOR` 映射）
+- 做T + 战略的全部配对关系 → 操作列显示对方记录序号（如 `SELL-324` / `BUY-325等`，多个对方按匹配量降序取最大）
+- 混有战略配对的记录保持高亮，便于在记录列表中直观区分做T与战略持仓
 
 **手续费计算：**
 | 品种 | 买入费用 | 卖出费用 |
@@ -297,7 +303,7 @@ pip install pandas numpy matplotlib
   - 导出分析结果到CSV/JSON
 
 ### 远期待办
-- **Web Dashboard**：FastAPI + React + AntDesign 看板方案（详见 [Web Dashboard 实施计划](file:///C:/Users/yan%20le/.claude/projects/D--Program-Python-Finance-tools/memory/web_dashboard_plan.md)）
+- **Web Dashboard**：FastAPI + React + AntDesign 看板方案（实施计划在个人本地记忆，路径见 `CLAUDE.local.md`）
 - **实时/每日价格同步**：寻找开源库，自动同步交易所价格数据（需要更新 trades.json 数据字段，加入标的代码）
 
 ## 项目结构

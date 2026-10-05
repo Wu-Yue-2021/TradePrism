@@ -11,4 +11,5 @@ CLAUDE.local.md
 
 /code_filed/
 /input/
-/data/
+/data/*
+!/data/trades_example.json

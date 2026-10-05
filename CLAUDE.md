@@ -158,6 +158,7 @@ echo $PROFILE.CurrentUserCurrentHost
 | `irr_analysis_interactive()` | IRR 分析交互界面 |
 | `Display.print_price_sensitivity_table()` | 价格波动敏感性表格 |
 | `Display.print_records(color_hierarchy)` | 打印记录，含费用列（NEW/BUY/SELL 计算，其余显示 "-"）；开启后做T降色 + 配对序号 |
+| `Display._build_match_info()` | 复用 IRR 分析器 `TradeAnalyzer.run()` 按品种识别做T/战略配对，返回（纯做T记录集合, 配对位置映射），供 print_records 颜色层次 |
 | `ensure_weekly_backup()` | 每周自动备份 |
 | `analyze_position_changes()` | 持仓历史分析 |
 
@@ -236,6 +237,7 @@ echo $PROFILE.CurrentUserCurrentHost
 
 ## 相关文档
 
-- [XIRR 网格法推导与定参](file:///D:/Program/Python/Finance/tools/docs/xirr_grid_method_derivation.md) — 四层网格的理论推导与 50000 组模拟实证
-- [做T匹配算法](file:///D:/Program/Python/Finance/tools/docs/t_trade_matching_algorithm.md)
-- [项目概览](file:///D:/Program/Python/Finance/tools/README_CN.md)
+- [XIRR 网格法推导与定参](docs/xirr_grid_method_derivation.md) — 四层网格的理论推导与 50000 组模拟实证
+- [做T匹配算法](docs/t_trade_matching_algorithm.md)
+- [对外精简版 README](README.md) — GitHub 首页：工具表、算法亮点、配置位置表、开发历程
+- [项目概览](README_CN.md)

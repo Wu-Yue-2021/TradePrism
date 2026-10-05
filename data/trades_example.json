@@ -1,0 +1,297 @@
+[
+  {
+    "symbol": "【现金】",
+    "records": [
+      {
+        "ts": "2026-03-02 09:35:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -2420000,
+        "current_qty": -2420000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-03 15:00:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -412000,
+        "current_qty": -2832000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-05 10:00:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -1180000,
+        "current_qty": -4012000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-10 09:40:00",
+        "side": "BUY",
+        "price": "0.010",
+        "delta_qty": 1260000,
+        "current_qty": -2752000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-12 15:00:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -394000,
+        "current_qty": -3146000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-17 09:35:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -1220000,
+        "current_qty": -4366000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-17 14:30:00",
+        "side": "BUY",
+        "price": "0.010",
+        "delta_qty": 1275000,
+        "current_qty": -3091000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-19 15:00:00",
+        "side": "BUY",
+        "price": "0.010",
+        "delta_qty": 318000,
+        "current_qty": -2773000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-24 09:45:00",
+        "side": "BUY",
+        "price": "0.010",
+        "delta_qty": 1290000,
+        "current_qty": -1483000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-03-24 14:45:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -1240000,
+        "current_qty": -2723000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-04-02 10:00:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -202000,
+        "current_qty": -2925000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-04-02 14:50:00",
+        "side": "BUY",
+        "price": "0.010",
+        "delta_qty": 209000,
+        "current_qty": -2716000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-04-08 10:10:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -2300000,
+        "current_qty": -5016000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-04-23 15:00:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -192000,
+        "current_qty": -5208000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-05-06 10:30:00",
+        "side": "BUY",
+        "price": "0.010",
+        "delta_qty": 1980000,
+        "current_qty": -3228000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-06-05 15:00:00",
+        "side": "BUY",
+        "price": "0.010",
+        "delta_qty": 327000,
+        "current_qty": -2901000,
+        "avg_cost_after": "0.0100"
+      },
+      {
+        "ts": "2026-06-11 09:50:00",
+        "side": "SELL",
+        "price": "0.010",
+        "delta_qty": -640000,
+        "current_qty": -3541000,
+        "avg_cost_after": "0.0100"
+      }
+    ]
+  },
+  {
+    "symbol": "示例股份",
+    "records": [
+      {
+        "ts": "2026-03-02 09:35:00",
+        "side": "NEW",
+        "price": "12.100",
+        "delta_qty": 2000,
+        "current_qty": 2000,
+        "avg_cost_after": "12.1000"
+      },
+      {
+        "ts": "2026-03-05 10:00:00",
+        "side": "BUY",
+        "price": "11.800",
+        "delta_qty": 1000,
+        "current_qty": 3000,
+        "avg_cost_after": "12.0000"
+      },
+      {
+        "ts": "2026-03-10 09:40:00",
+        "side": "SELL",
+        "price": "12.600",
+        "delta_qty": -1000,
+        "current_qty": 2000,
+        "avg_cost_after": "11.7000"
+      },
+      {
+        "ts": "2026-03-17 09:35:00",
+        "side": "BUY",
+        "price": "12.200",
+        "delta_qty": 1000,
+        "current_qty": 3000,
+        "avg_cost_after": "11.8667"
+      },
+      {
+        "ts": "2026-03-17 14:30:00",
+        "side": "SELL",
+        "price": "12.750",
+        "delta_qty": -1000,
+        "current_qty": 2000,
+        "avg_cost_after": "11.4250"
+      },
+      {
+        "ts": "2026-03-24 09:45:00",
+        "side": "SELL",
+        "price": "12.900",
+        "delta_qty": -1000,
+        "current_qty": 1000,
+        "avg_cost_after": "9.9500"
+      },
+      {
+        "ts": "2026-03-24 14:45:00",
+        "side": "BUY",
+        "price": "12.400",
+        "delta_qty": 1000,
+        "current_qty": 2000,
+        "avg_cost_after": "11.1750"
+      },
+      {
+        "ts": "2026-04-08 10:10:00",
+        "side": "BUY",
+        "price": "11.500",
+        "delta_qty": 2000,
+        "current_qty": 4000,
+        "avg_cost_after": "11.3375"
+      },
+      {
+        "ts": "2026-04-15 15:00:00",
+        "side": "RECORD",
+        "price": "11.800",
+        "delta_qty": 0,
+        "current_qty": 4000,
+        "avg_cost_after": "11.3375"
+      },
+      {
+        "ts": "2026-05-06 10:30:00",
+        "side": "SELL",
+        "price": "13.200",
+        "delta_qty": -1500,
+        "current_qty": 2500,
+        "avg_cost_after": "10.2200"
+      },
+      {
+        "ts": "2026-06-11 09:50:00",
+        "side": "BUY",
+        "price": "12.800",
+        "delta_qty": 500,
+        "current_qty": 3000,
+        "avg_cost_after": "10.6500"
+      }
+    ]
+  },
+  {
+    "symbol": "示例ETF",
+    "records": [
+      {
+        "ts": "2026-03-03 15:00:00",
+        "side": "NEW",
+        "price": "1.030",
+        "delta_qty": 4000,
+        "current_qty": 4000,
+        "avg_cost_after": "1.0300"
+      },
+      {
+        "ts": "2026-03-12 15:00:00",
+        "side": "BUY",
+        "price": "0.985",
+        "delta_qty": 4000,
+        "current_qty": 8000,
+        "avg_cost_after": "1.0075"
+      },
+      {
+        "ts": "2026-03-19 15:00:00",
+        "side": "SELL",
+        "price": "1.060",
+        "delta_qty": -3000,
+        "current_qty": 5000,
+        "avg_cost_after": "0.9760"
+      },
+      {
+        "ts": "2026-04-02 10:00:00",
+        "side": "BUY",
+        "price": "1.010",
+        "delta_qty": 2000,
+        "current_qty": 7000,
+        "avg_cost_after": "0.9857"
+      },
+      {
+        "ts": "2026-04-02 14:50:00",
+        "side": "SELL",
+        "price": "1.045",
+        "delta_qty": -2000,
+        "current_qty": 5000,
+        "avg_cost_after": "0.9620"
+      },
+      {
+        "ts": "2026-04-23 15:00:00",
+        "side": "BUY",
+        "price": "0.960",
+        "delta_qty": 2000,
+        "current_qty": 7000,
+        "avg_cost_after": "0.9614"
+      },
+      {
+        "ts": "2026-06-05 15:00:00",
+        "side": "SELL",
+        "price": "1.090",
+        "delta_qty": -3000,
+        "current_qty": 4000,
+        "avg_cost_after": "0.8650"
+      }
+    ]
+  }
+]
