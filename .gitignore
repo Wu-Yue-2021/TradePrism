@@ -10,6 +10,8 @@ __pycache__/
 CLAUDE.local.md
 
 /code_filed/
+/code_tmp/*
+!/code_tmp/xirr
 /input/
 /data/*
 !/data/trades_example.json

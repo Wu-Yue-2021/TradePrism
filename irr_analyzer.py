@@ -16,7 +16,7 @@ STOCK_COMMISSION_RATE = 1.15 / 10000 # 股票佣金率
 STOCK_COMMISSION_RATE_DB = 0.841 / 10000
 STOCK_MIN_COMMISSION = 5 # 股票最低手续费（元）
 STOCK_MIN_COMMISSION_DB = 0.1
-STOCK_TRANSFER_FEE = 2 / 10000 # 股票过户费（元）
+STOCK_TRANSFER_FEE = 0.1 / 10000 # 股票过户费（元）（备注：不清楚是否有 0.01 起收的规则，目前是四舍五入，只有看了 500 元以下的股票交割单才知道）
 STOCK_STAMP_DUTY_RATE = 5 / 10000 # 股票印花税率（仅卖出）
 FEE_CUTOVER_DATE = datetime(2026, 7, 11) # 费率分档切换日（之前用旧费率，之后用 _DB 降费档）
 XIRR_SCAN_LIMIT = 150.0 # 扫描总边界 ±150：覆盖创业板 20cm（-81/+67）与核准制新股首日（+133）
@@ -26,6 +26,182 @@ XIRR_SCAN_LAYERS = (    # 四层非均匀网格 (该层外边界, 该层步长)�
     (80.0, 0.53),       # 边界 80 有制度依据：对应"1 天 ±24%"，恰在创业板 20cm 涨停之外
     (150.0, 18.0),      # |u| > 80 处最小根对间距达 36，根对极稀疏
 )
+
+
+# ===============================
+# XIRR 求解器（模块级纯函数）
+# 与品种无关：只吃现金流序列，供 TradeAnalyzer 与 PortfolioAnalyzer 共用同一个求解器
+# ===============================
+
+def solve_xirr(cash_flows):
+    """
+    求解 XIRR，返回全部实根 [(r, u), ...]（按 r 升序；空列表表示无有效解）
+
+    cash_flows: [(datetime, amount), ...]。可来自单一品种，也可以是多个品种合并后的
+    序列——求解器不认识品种，时间零点取最早的一条现金流（整体平移不改变根）。
+
+    r = e^u - 1 是年化收益率，u = ln(1+r) 是求解所用的自变量，两者一并返回。
+    之所以不能只给 r：r 逼近 -100% 时表示精度急剧下降（u ≈ -36 时，相邻两个
+    可表示的 r 对应的 u 相差约 0.5），凡需精细计算之处（如把年化折算回区间收益）
+    都必须用 u —— 用 r 会得到 -100% 而真值可能是 -30%。
+
+    先在自变量 u 上扫描定位 NPV 的变号区间，再在各区间内用阻尼牛顿法细化：
+    扫描依据中值定理，保证不漏根；牛顿法保证区间内的收敛速度与精度。
+    取 u = ln(1+r) 而非 r 本身，是因为 r 的定义域 (-1, +∞) 下界是开区间，
+    迭代一旦越界 (1+r) 即变负，math.pow 便抛 domain error；u 域为全体实数，
+    从根上消除了越界问题，同时顺带解决了 r 冲向无穷时的溢出。
+    """
+    if not cash_flows:
+        return []
+    amounts = [cf[1] for cf in cash_flows]
+    min_date = min(cf[0] for cf in cash_flows)
+    years = [(cf[0] - min_date).total_seconds() / 31536000.0 for cf in cash_flows]
+
+    roots = []
+    for u_lo, u_hi in _xirr_sign_change_intervals(years, amounts):
+        u = _xirr_newton(years, amounts, (u_lo + u_hi) / 2.0)
+        if u is None:  # 牛顿法未收敛时退回二分，保证区间内一定有结果输出
+            u = _xirr_bisect(years, amounts, u_lo, u_hi)
+        # 相邻区间可能收敛到同一个根，按 u 去重（u 域精度全程均匀）
+        if not any(abs(u - x) < 1e-9 for x in roots):
+            roots.append(u)
+    return [(math.exp(u) - 1, u) for u in sorted(roots)]
+
+
+def _xirr_npv(u, years, amounts):
+    """u 域上的净现值：NPV(u) = Σ a·e^(-y·u)"""
+    return sum(a * math.exp(-y * u) for a, y in zip(amounts, years))
+
+
+def _xirr_npv_prime(u, years, amounts):
+    """净现值对 u 的导数"""
+    return sum(-y * a * math.exp(-y * u) for a, y in zip(amounts, years))
+
+
+def _xirr_u_range(years):
+    """自变量的安全区间 (u_min, u_max)：下界防 e^(-y·u) 溢出，上界即扫描可达范围"""
+    u_max = XIRR_SCAN_LIMIT
+    # 600 系 math.exp 溢出阈值(约 709)留出余量后的安全指数，除以最长持有年数得到 |u| 上界
+    return -min(u_max, 600.0 / max(max(years), 1e-9)), u_max
+
+
+def _xirr_sign_change_intervals(years, amounts):
+    """扫描 u 域上 NPV 的正负号变化，返回疑似含根的 (u_lo, u_hi) 区间列表"""
+    intervals = []
+    prev_u, prev_v = None, None
+    for u in _xirr_scan_grid(years):
+        v = _xirr_npv(u, years, amounts)
+        if prev_v is not None and (prev_v > 0) != (v > 0):
+            intervals.append((prev_u, u))
+        prev_u, prev_v = u, v
+    return intervals
+
+
+def _xirr_scan_grid(years):
+    """构造关于 0 对称的四层非均匀扫描网格：中间区步长细，外围逐级放大"""
+    u_min, u_max = _xirr_u_range(years)
+    limit = min(abs(u_min), u_max)
+    pos = [0.0]
+    prev_edge = 0.0
+    for edge, step in XIRR_SCAN_LAYERS:
+        edge = min(edge, limit)
+        if edge <= prev_edge:   # 已越过 limit 时，下一层必然在此退出
+            break
+        n = max(1, math.ceil((edge - prev_edge) / step))
+        pos.extend(prev_edge + (edge - prev_edge) * i / n for i in range(1, n + 1))
+        prev_edge = edge
+    return [-u for u in reversed(pos[1:])] + pos
+
+
+def _xirr_newton(years, amounts, u0):
+    """
+    阻尼牛顿法：每步先试算，若 |NPV| 相对当前点未下降就把步长减半重试
+
+    未收敛（找不到下降方向，或落点精度不达标）时返回 None，交由二分法兜底。
+    """
+    scale = sum(abs(a) for a in amounts)
+    u_min, u_max = _xirr_u_range(years)
+    u = u0
+    for _ in range(60):  # 牛顿法二次收敛，几十次迭代远够
+        v = _xirr_npv(u, years, amounts)
+        dv = _xirr_npv_prime(u, years, amounts)
+        if dv == 0:
+            return None
+        step = v / dv
+        alpha = 1.0
+        while alpha > 1e-10:
+            nu = u - alpha * step
+            # 越出安全区间就减半，对应 r 域里的"越界减半"
+            if not u_min <= nu <= u_max:
+                alpha *= 0.5
+                continue
+            if abs(_xirr_npv(nu, years, amounts)) < abs(v):
+                break
+            alpha *= 0.5
+        else:
+            break
+        du = abs(nu - u)
+        u = nu
+        if du < 1e-15 * max(1.0, abs(u)):
+            break
+    return u if abs(_xirr_npv(u, years, amounts)) < 1e-9 * scale else None
+
+
+def _xirr_bisect(years, amounts, u_lo, u_hi):
+    """二分法兜底：只依赖 NPV 的正负号，不需要导数，对病态形状也稳定"""
+    v_lo = _xirr_npv(u_lo, years, amounts)
+    for _ in range(60):  # 初始区间宽 ≤0.08，60 次二分已远超 double 分辨率
+        u_mid = (u_lo + u_hi) / 2.0
+        v_mid = _xirr_npv(u_mid, years, amounts)
+        if v_lo * v_mid <= 0:
+            u_hi = u_mid
+        else:
+            u_lo, v_lo = u_mid, v_mid
+    return (u_lo + u_hi) / 2.0
+
+
+# ===============================
+# 交易指标统计（模块级纯函数）
+# 与品种无关：吃交易列表，贡献度分母由调用方给出
+# ===============================
+
+def calc_trade_metrics(trades: List[Dict], contribution_base: Optional[float] = None) -> Dict:
+    """
+    通用交易指标计算
+
+    trades: [{'pnl': float, ...}, ...]，做T或战略交易列表
+    contribution_base: 贡献度的分母（通常是所在口径的总盈亏）。组合分析必须由调用方
+        传入组合层总盈亏——若各自取本品种的 get_total_pnl()，多品种合并后分母会错位
+    """
+    if not trades:
+        return {'count': 0, 'total_pnl': 0, 'avg_pnl': 0, 'win_rate': 0, 'profit_ratio': 0, 'expectancy': 0, 'contribution': 0}
+
+    wins = [t for t in trades if t['pnl'] > 0]
+    losses = [t for t in trades if t['pnl'] <= 0]
+
+    total_pnl = sum(t['pnl'] for t in trades)
+    avg_pnl = total_pnl / len(trades)
+    win_count = len(wins)
+    loss_count = len(losses)
+    total_count = len(trades)
+
+    win_rate = win_count / total_count if total_count > 0 else 0
+    avg_win = sum(t['pnl'] for t in wins) / win_count if win_count > 0 else 0
+    avg_loss = abs(sum(t['pnl'] for t in losses) / loss_count) if loss_count > 0 else 0
+    profit_ratio = avg_win / avg_loss if avg_loss > 0 else float('inf')
+    expectancy = win_rate * profit_ratio - (1 - win_rate)
+
+    contribution = (total_pnl / contribution_base * 100) if contribution_base else 0
+
+    return {
+        'count': total_count,
+        'total_pnl': total_pnl,
+        'avg_pnl': avg_pnl,
+        'win_rate': win_rate,
+        'profit_ratio': profit_ratio,
+        'expectancy': expectancy,
+        'contribution': contribution
+    }
 
 
 class TradeAnalyzer:
@@ -48,7 +224,7 @@ class TradeAnalyzer:
         self.end_ts:str|None = end_ts
         self.window_days = window_days
 
-    def run(self, T_allow_cross=True):
+    def run(self, T_allow_cross=True, initial_lots=None):
         """
         执行分析 - 使用离线延迟匹配识别做T交易
 
@@ -61,6 +237,11 @@ class TradeAnalyzer:
 
         args:
             T_allow_cross: 是否允许交叉匹配（如BSBS中2-3,1-4)，默认True
+            initial_lots: 期初既有持仓（区间复盘用），形如
+                [{'price': 期初价, 'qty': 数量, 'ts': 区间起点, 'buy_fee': 0.0}]
+                直接置于 LIFO 栈底，**不进入 t_window**——否则会与区间首日的卖出配成假做T。
+                其 price 按区间口径给定（即期初市值价），故后续 LIFO 平仓算出的 pnl
+                天然就是区间内盈亏，无需另行重定基
         """
         self.t_window = []  # 做T匹配窗口
         self.t_trades = []  # 做T交易
@@ -68,6 +249,15 @@ class TradeAnalyzer:
         self.strategic_trades = []  # 战略已平仓
         self.cash_flows = []  # 全部现金流
         self.strategic_cash_flows = []  # 战略现金流
+        # 派生属性在此统一初始化，早退分支与正常路径共用同一份初值，
+        # 避免调用方读到未定义字段
+        self.unrealized_pnl = 0.0
+        self.first_trade_ts = None
+        self.matched_cf_len = 0
+
+        # 期初持仓直接进栈底：先于全部区间内交易，符合 LIFO 下"底仓最后被卖"的顺序
+        if initial_lots:
+            self.strategic_inventory.extend(initial_lots)
 
         # === 阶段1: 全部读入 t_window ===
         for r in self.records:
@@ -86,8 +276,8 @@ class TradeAnalyzer:
                 'side': side,
             })
         n = len(self.t_window)
-        if n == 0:
-            return
+        if n == 0 and not self.strategic_inventory:
+            return      # 派生属性已在开头初始化
         # === 阶段2: 动态堆匹配 ===
         # 初始化双向链表索引（prev_idx / next_idx）
         import heapq
@@ -190,9 +380,12 @@ class TradeAnalyzer:
             self.current_price * i['qty']
             - self._calculate_trade_fee(self.current_price, i['qty'], 'SELL',i['ts'])
             - i['price'] * i['qty']
-            - self._calculate_trade_fee(i['price'], i['qty'], 'BUY',i['ts'])
+            - self._lot_buy_fee(i, i['qty'])
             for i in self.strategic_inventory
         )
+
+        # 闭环边界：此前的战略现金流全部来自实际匹配（已平仓），其后的终值块属未平仓部分
+        self.matched_cf_len = len(self.strategic_cash_flows)
 
         # 添加终值现金流：剩余 inventory 的 BUY + 虚拟 SELL
         if self.end_ts:
@@ -201,7 +394,7 @@ class TradeAnalyzer:
             end_datetime = datetime.now()
         for lot in self.strategic_inventory:
             buy_amount = lot['price'] * lot['qty']
-            buy_fee = self._calculate_trade_fee(lot['price'], lot['qty'], 'BUY', lot['ts'])
+            buy_fee = self._lot_buy_fee(lot, lot['qty'])
             buy_cf = (lot['ts'], -(buy_amount + buy_fee))
             self.strategic_cash_flows.append(buy_cf)
             self.cash_flows.append(buy_cf)
@@ -289,7 +482,7 @@ class TradeAnalyzer:
                 days = max(days, 0.001)
                 buy_amount = last_lot['price'] * exec_qty
                 sell_amount = sell_price * exec_qty
-                buy_fee = self._calculate_trade_fee(last_lot['price'], exec_qty, 'BUY', last_lot['ts'])
+                buy_fee = self._lot_buy_fee(last_lot, exec_qty)
                 sell_fee = self._calculate_trade_fee(sell_price, exec_qty, 'SELL', trade['ts'])
                 investment = buy_amount + buy_fee
                 pnl = sell_amount - sell_fee - investment
@@ -336,120 +529,23 @@ class TradeAnalyzer:
 
     def calculate_xirr(self, exclude_t=True):
         """
-        求解 XIRR，返回全部实根 [(r, u), ...]（按 r 升序；空列表表示无有效解）
+        求解本分析器的 XIRR，返回全部实根 [(r, u), ...]（按 r 升序；空列表表示无有效解）
 
-        r = e^u - 1 是年化收益率，u = ln(1+r) 是求解所用的自变量，两者一并返回。
-        之所以不能只给 r：r 逼近 -100% 时表示精度急剧下降（u ≈ -36 时，相邻两个
-        可表示的 r 对应的 u 相差约 0.5），凡需精细计算之处（如把年化折算回区间收益）
-        都必须用 u —— 用 r 会得到 -100% 而真值可能是 -30%。
-
-        先在自变量 u 上扫描定位 NPV 的变号区间，再在各区间内用阻尼牛顿法细化：
-        扫描依据中值定理，保证不漏根；牛顿法保证区间内的收敛速度与精度。
-        取 u = ln(1+r) 而非 r 本身，是因为 r 的定义域 (-1, +∞) 下界是开区间，
-        迭代一旦越界 (1+r) 即变负，math.pow 便抛 domain error；u 域为全体实数，
-        从根上消除了越界问题，同时顺带解决了 r 冲向无穷时的溢出。
+        完整求解原理见模块级 solve_xirr 的说明；本方法只负责挑选现金流集合：
+        exclude_t=True 用战略现金流（不含做T），False 用全部现金流。
         """
-        cash_flows = self.strategic_cash_flows if exclude_t else self.cash_flows
-        if not cash_flows:
-            return []
-        amounts = [cf[1] for cf in cash_flows]
-        min_date = min(cf[0] for cf in cash_flows)
-        years = [(cf[0] - min_date).total_seconds() / 31536000.0 for cf in cash_flows]
+        flows = self.strategic_cash_flows if exclude_t else self.cash_flows
+        return solve_xirr(flows)
 
-        roots = []
-        for u_lo, u_hi in self._xirr_sign_change_intervals(years, amounts):
-            u = self._xirr_newton(years, amounts, (u_lo + u_hi) / 2.0)
-            if u is None:  # 牛顿法未收敛时退回二分，保证区间内一定有结果输出
-                u = self._xirr_bisect(years, amounts, u_lo, u_hi)
-            # 相邻区间可能收敛到同一个根，按 u 去重（u 域精度全程均匀）
-            if not any(abs(u - x) < 1e-9 for x in roots):
-                roots.append(u)
-        return [(math.exp(u) - 1, u) for u in sorted(roots)]
-
-    def _xirr_npv(self, u, years, amounts):
-        """u 域上的净现值：NPV(u) = Σ a·e^(-y·u)"""
-        return sum(a * math.exp(-y * u) for a, y in zip(amounts, years))
-
-    def _xirr_npv_prime(self, u, years, amounts):
-        """净现值对 u 的导数"""
-        return sum(-y * a * math.exp(-y * u) for a, y in zip(amounts, years))
-
-    def _xirr_u_range(self, years):
-        """自变量的安全区间 (u_min, u_max)：下界防 e^(-y·u) 溢出，上界即扫描可达范围"""
-        u_max = XIRR_SCAN_LIMIT
-        # 600 系 math.exp 溢出阈值(约 709)留出余量后的安全指数，除以最长持有年数得到 |u| 上界
-        return -min(u_max, 600.0 / max(max(years), 1e-9)), u_max
-
-    def _xirr_sign_change_intervals(self, years, amounts):
-        """扫描 u 域上 NPV 的正负号变化，返回疑似含根的 (u_lo, u_hi) 区间列表"""
-        intervals = []
-        prev_u, prev_v = None, None
-        for u in self._xirr_scan_grid(years):
-            v = self._xirr_npv(u, years, amounts)
-            if prev_v is not None and (prev_v > 0) != (v > 0):
-                intervals.append((prev_u, u))
-            prev_u, prev_v = u, v
-        return intervals
-
-    def _xirr_scan_grid(self, years):
-        """构造关于 0 对称的四层非均匀扫描网格：中间区步长细，外围逐级放大"""
-        u_min, u_max = self._xirr_u_range(years)
-        limit = min(abs(u_min), u_max)
-        pos = [0.0]
-        prev_edge = 0.0
-        for edge, step in XIRR_SCAN_LAYERS:
-            edge = min(edge, limit)
-            if edge <= prev_edge:   # 已越过 limit 时，下一层必然在此退出
-                break
-            n = max(1, math.ceil((edge - prev_edge) / step))
-            pos.extend(prev_edge + (edge - prev_edge) * i / n for i in range(1, n + 1))
-            prev_edge = edge
-        return [-u for u in reversed(pos[1:])] + pos
-
-    def _xirr_newton(self, years, amounts, u0):
-        """
-        阻尼牛顿法：每步先试算，若 |NPV| 相对当前点未下降就把步长减半重试
-
-        未收敛（找不到下降方向，或落点精度不达标）时返回 None，交由二分法兜底。
-        """
-        scale = sum(abs(a) for a in amounts)
-        u_min, u_max = self._xirr_u_range(years)
-        u = u0
-        for _ in range(60):  # 牛顿法二次收敛，几十次迭代远够
-            v = self._xirr_npv(u, years, amounts)
-            dv = self._xirr_npv_prime(u, years, amounts)
-            if dv == 0:
-                return None
-            step = v / dv
-            alpha = 1.0
-            while alpha > 1e-10:
-                nu = u - alpha * step
-                # 越出安全区间就减半，对应 r 域里的"越界减半"
-                if not u_min <= nu <= u_max:
-                    alpha *= 0.5
-                    continue
-                if abs(self._xirr_npv(nu, years, amounts)) < abs(v):
-                    break
-                alpha *= 0.5
-            else:
-                break
-            du = abs(nu - u)
-            u = nu
-            if du < 1e-15 * max(1.0, abs(u)):
-                break
-        return u if abs(self._xirr_npv(u, years, amounts)) < 1e-9 * scale else None
-
-    def _xirr_bisect(self, years, amounts, u_lo, u_hi):
-        """二分法兜底：只依赖 NPV 的正负号，不需要导数，对病态形状也稳定"""
-        v_lo = self._xirr_npv(u_lo, years, amounts)
-        for _ in range(60):  # 初始区间宽 ≤0.08，60 次二分已远超 double 分辨率
-            u_mid = (u_lo + u_hi) / 2.0
-            v_mid = self._xirr_npv(u_mid, years, amounts)
-            if v_lo * v_mid <= 0:
-                u_hi = u_mid
-            else:
-                u_lo, v_lo = u_mid, v_mid
-        return (u_lo + u_hi) / 2.0
+    # 兼容别名：求解器实现已提为模块级纯函数（供 PortfolioAnalyzer 共用同一求解器），
+    # 此处保留同名入口，既有调用点与回归测试（code_tmp/xirr/xirr_solver_test.py）零改动
+    _xirr_npv = staticmethod(_xirr_npv)
+    _xirr_npv_prime = staticmethod(_xirr_npv_prime)
+    _xirr_u_range = staticmethod(_xirr_u_range)
+    _xirr_sign_change_intervals = staticmethod(_xirr_sign_change_intervals)
+    _xirr_scan_grid = staticmethod(_xirr_scan_grid)
+    _xirr_newton = staticmethod(_xirr_newton)
+    _xirr_bisect = staticmethod(_xirr_bisect)
 
     def get_t_metrics(self) -> Dict:
         """计算做T交易指标"""
@@ -460,45 +556,28 @@ class TradeAnalyzer:
         return self._calculate_metrics(self.strategic_trades)
     
     def _calculate_metrics(self, trades: List[Dict]) -> Dict:
-        """通用指标计算"""
-        if not trades:
-            return {'count': 0, 'total_pnl': 0, 'avg_pnl': 0, 'win_rate': 0, 'profit_ratio': 0, 'expectancy': 0, 'contribution': 0}
-
-        wins = [t for t in trades if t['pnl'] > 0]
-        losses = [t for t in trades if t['pnl'] <= 0]
-
-        total_pnl = sum(t['pnl'] for t in trades)
-        avg_pnl = total_pnl / len(trades)
-        win_count = len(wins)
-        loss_count = len(losses)
-        total_count = len(trades)
-
-        win_rate = win_count / total_count if total_count > 0 else 0
-        avg_win = sum(t['pnl'] for t in wins) / win_count if win_count > 0 else 0
-        avg_loss = abs(sum(t['pnl'] for t in losses) / loss_count) if loss_count > 0 else 0
-        profit_ratio = avg_win / avg_loss if avg_loss > 0 else float('inf')
-        expectancy = win_rate * profit_ratio - (1 - win_rate)
-
-        total_pnl_all = self.get_total_pnl()
-        contribution = (total_pnl / total_pnl_all * 100) if total_pnl_all != 0 else 0
-
-        return {
-            'count': total_count,
-            'total_pnl': total_pnl,
-            'avg_pnl': avg_pnl,
-            'win_rate': win_rate,
-            'profit_ratio': profit_ratio,
-            'expectancy': expectancy,
-            'contribution': contribution
-        }
+        """实例口径的指标计算：贡献度分母取本分析器的总盈亏"""
+        return calc_trade_metrics(trades, self.get_total_pnl())
     
     # 公共辅助函数区
+    def _lot_buy_fee(self, lot, qty) -> float:
+        """lot 的买入费用。
+
+        显式带 buy_fee 的 lot（期初持仓虚拟 lot——其"买入"并非区间内真实发生）直接取该值，
+        不做部分消耗分摊：当前唯一来源其值恒为 0，分摊与否无差别；其余 lot 按费率现算。
+        """
+        preset = lot.get('buy_fee')
+        if preset is not None:
+            return preset
+        return self._calculate_trade_fee(lot['price'], qty, 'BUY', lot['ts'])
+
     @staticmethod
     def is_fund(price: float, symbol: str) -> bool:
         return price < FUND_PRICE_THRESHOLD or 'ETF' in symbol.upper()
 
     @staticmethod
     def calculate_trade_fee(price: float, qty: int, side: str, symbol: str, ts: datetime|None = None, force_HT: bool = False) -> float:
+        if qty == 0: return 0 # 处理股息入账和红利税补缴
         amount = price * qty
         use_old = ts is None or ts < FEE_CUTOVER_DATE or force_HT
         if TradeAnalyzer.is_fund(price, symbol):
@@ -792,4 +871,5 @@ def analyze_and_print_irr(analyzer: TradeAnalyzer, exclude_t: bool = True) -> No
         print(f"  {GREY}无匹配交易，无法计算区间收益{RESET}")
     print("")
     print(f"{CYAN}{'=' * 115}{RESET}\n")
+
 

@@ -468,6 +468,8 @@ def analyze_position_changes(start_date: datetime, end_date: datetime) -> None:
     每日输出：总市值、股票市值、现金、仓位比例
     变化品种：显示仓位变动和占比变化
     """
+    from irr_analyzer import TradeAnalyzer
+
     data = DataManager.load_trades()
     dates = generate_date_range(start_date, end_date)
 
@@ -486,6 +488,7 @@ def analyze_position_changes(start_date: datetime, end_date: datetime) -> None:
     daily_stock = {}        # {date: stock_value}
     daily_cash = {}         # {date: cash_value}
     daily_positions = {}    # {date: {symbol: {"value": value, "qty": qty, "price": price}}}
+    daily_sec_inflow = {}   # {date: Σ买入(含费) − Σ卖出(扣费)}，识别出入金用
 
     # === 每个品种遍历一次，指针推进 ===
     for symbol, records in symbol_blocks:
@@ -497,8 +500,20 @@ def analyze_position_changes(start_date: datetime, end_date: datetime) -> None:
 
             # 推进指针到该日期前最后一条记录
             while rec_idx < len(records) and records[rec_idx]["ts"] <= time_point:
-                curr_qty = int(records[rec_idx]["current_qty"])
-                curr_price = float(records[rec_idx]["price"])
+                rec = records[rec_idx]
+                curr_qty = int(rec["current_qty"])
+                curr_price = float(rec["price"])
+                # 顺带累计证券侧净流入：买入使现金流出(含费)、卖出使现金流入(扣费)。
+                # 口径同 PortfolioAnalyzer._security_net_inflow_by_day，改动需同步
+                if symbol != CASH_SYMBOL and rec["side"] in ("BUY", "NEW", "SELL"):
+                    qty = abs(int(rec["delta_qty"]))
+                    amount = float(rec["price"]) * qty
+                    fee = TradeAnalyzer.calculate_trade_fee(
+                        float(rec["price"]), qty, rec["side"], symbol,
+                        datetime.strptime(rec["ts"], "%Y-%m-%d %H:%M:%S"))
+                    day = rec["ts"][:10]
+                    flow = amount + fee if rec["side"] in ("BUY", "NEW") else -(amount - fee)
+                    daily_sec_inflow[day] = daily_sec_inflow.get(day, 0.0) + flow
                 rec_idx += 1
 
             value = curr_qty * curr_price
@@ -510,7 +525,7 @@ def analyze_position_changes(start_date: datetime, end_date: datetime) -> None:
                 daily_stock[date] = daily_stock.get(date, 0) + value
             daily_total[date] = daily_total.get(date, 0) + value
 
-    # === 输出：对比相邻日期，只显示有持仓变化的日期 ===
+    # === 输出：对比相邻日期，只显示有持仓变化或出入金的日期 ===
     symbols = [s for s, _ in symbol_blocks]
 
     for i, date in enumerate(dates):
@@ -525,6 +540,12 @@ def analyze_position_changes(start_date: datetime, end_date: datetime) -> None:
 
         prev_date = dates[i - 1]
         prev_total = daily_total.get(prev_date, 0)
+
+        # 外部资金（出入金）= Δ现金 + 证券侧净流入：买卖证券造成的现金变化被第二项抵消，
+        # 余下的即无对应证券交易的资金进出。不足 1 元的残差是费率估算舍入，忽略
+        external = (cash - daily_cash.get(prev_date, 0)) + daily_sec_inflow.get(date, 0.0)
+        if abs(external) < 20:
+            external = 0.0
 
         # 收集有持仓数量变化的品种
         changed_symbols = []
@@ -556,14 +577,17 @@ def analyze_position_changes(start_date: datetime, end_date: datetime) -> None:
                     "prev_qty": prev_qty
                 })
 
-        # 没有持仓变化则跳过该日期
-        if not changed_symbols:
+        # 没有持仓变化则跳过该日期（出入金本身也是值得单独列出的一天）
+        if not changed_symbols and not external:
             continue
         changed_symbols.sort(key=lambda s: abs(float(s["delta"])), reverse= True)
         # 颜色：总市值增加红色，减少绿色
         total_color = RED if total > prev_total else (GREEN if total < prev_total else RESET)
 
         print(f"\n{GREY}{date}{RESET}  总资产: {total_color}{total:.0f}{RESET}  股票: {stock:.0f}  现金: {cash:.0f}  仓位: {ratio:.1f}%")
+
+        if external:
+            print(f"  {CYAN}→ 外部资金: {external:+.0f}{RESET}")
 
         # 输出变化的品种
         for item in changed_symbols:
@@ -586,7 +610,8 @@ def analyze_position_changes(start_date: datetime, end_date: datetime) -> None:
 
             print(f"  → {symbol}: {action_color}{delta:+.0f}{RESET} [{prev_qty:.0f}→{curr_qty:.0f}] ({prev_ratio:.1f}% → {curr_ratio:.1f}%){CYAN}{marker}{RESET}")
 
-    print(f"\n注意：变动金额基于当日最后价格估算，实际请以交易记录为准；股票和仓位仅供参考。")
+    print(f"\n注意：\n变动金额基于当日最后价格估算，实际值请以交易记录为准；由于并非所有标的每日更新，股票和仓位仅供参考。")
+    print("外部资金 = 当日现金变化 − 当日证券侧现金流出，即无对应交易的出入金（实测值），可能来源为银证转账或股息入账。")
     print(f"回车以继续...")
     input()
 
@@ -620,7 +645,13 @@ def position_history_interactive() -> None:
 
     if start_date > end_date:
         start_date, end_date = end_date, start_date
-
+    try:
+        import ctypes
+        import sys
+        if sys.platform == "win32":
+            ctypes.windll.kernel32.SetConsoleTitleW(f"持仓变化@{start_date.month}.{start_date.day}-{end_date.month}.{end_date.day}")
+    except:
+        pass
     analyze_position_changes(start_date, end_date)
 
 
@@ -675,7 +706,7 @@ def irr_analysis_interactive(symbol: str, default_price: float) -> None:
     advanced_mode = input().strip().upper()
     if advanced_mode == "Y":
         # 时间范围筛选
-        print("请输入时间(如(2026-)01-25 HH:MM(:SS)，留空表示不限；\nt(oday)/仅日期会补充默认时间，仅时间默认为今天): ")
+        print("请输入时间(如(2026-)01-25 HH:MM(:SS)，留空表示不限；\n日期可替换成t(oday)，仅日期会补充默认时间，仅时间则日期为今天): ")
         start_ts = get_input_time("起始时间 (默认：00:00:00): ", "00:00:00")
         end_ts = get_input_time("结束时间 (默认：23:59:59): ", "23:59:59")
         # 获取期末价格
@@ -688,6 +719,115 @@ def irr_analysis_interactive(symbol: str, default_price: float) -> None:
     # 执行分析并输出
     analyze_symbol_irr(symbol, analysis_price, start_ts, end_ts, window_days, exclude_t)
     input("回车以继续...")
+
+
+def portfolio_review_interactive() -> None:
+    """组合复盘交互界面：跨品种的区间资金效率报告"""
+    from portfolio_analyzer import PortfolioAnalyzer
+    from portfolio_review import print_portfolio_review
+
+    print("\n--- 组合复盘（跨品种区间分析）---")
+
+    today = datetime.now()
+    lastweekday = today - timedelta(days=3) if today.weekday() == 0 else today - timedelta(days=1)
+    this_month_start = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    prev_month_end = this_month_start - timedelta(seconds=1)
+    prev_month_start = prev_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    print(f"  1. 上月 ({prev_month_start:%Y-%m-%d} ~ {prev_month_end:%Y-%m-%d})")
+    print(f"  2. 本月至今 ({this_month_start:%Y-%m-%d} ~ {today:%Y-%m-%d})")
+    print(f"  3. 上个交易日 ({lastweekday:%Y-%m-%d})")
+    print("  4. 自定义")
+    sel = input("选择统计区间 [1]: ").strip() or "1"
+
+    if sel == "2":
+        start_ts, end_ts = this_month_start.strftime("%Y-%m-%d 00:00:00"), today.strftime("%Y-%m-%d 23:59:59")
+    elif sel == "3":
+        start_ts, end_ts = lastweekday.strftime("%Y-%m-%d 00:00:00"), lastweekday.strftime("%Y-%m-%d 23:59:59")
+    elif sel == "4":
+        print("请输入起止时间（如(2026-)01-25 HH:MM(:SS)，留空表示不限；\n日期可替换成t(oday)，仅日期会补充默认时间，仅时间则日期为今天): ")
+        start_ts = get_input_time("起始时间 (默认：00:00:00): ", "00:00:00")
+        end_ts = get_input_time("结束时间 (默认：23:59:59): ", "23:59:59")
+        if not start_ts or not end_ts:
+            print("自定义区间需要同时给出起止时间")
+            input("回车以继续...")
+            return
+    else:
+        start_ts, end_ts = prev_month_start.strftime("%Y-%m-%d 00:00:00"), prev_month_end.strftime("%Y-%m-%d 23:59:59")
+
+    window_days = int(input_with_default("做T窗口时间(天)", 3))
+
+    blocks = DataManager.load_trades()
+    if not blocks:
+        print("暂无品种记录")
+        input("回车以继续...")
+        return
+    try:
+        import ctypes
+        import sys
+        if sys.platform == "win32":
+            ctypes.windll.kernel32.SetConsoleTitleW(f"交易复盘@{start_ts[5:10]}".replace("-", ".")+"-"+f"{end_ts[5:10]}".replace("-", "."))
+    except:
+        pass
+    
+    records_by_symbol = {b["symbol"]: b["records"] for b in blocks}
+    # 价格体检：只对需要人工确认的品种提示（区间内无记录，或期初价过于陈旧）
+    LAG_WARN_DAYS = 30.0
+    pa = PortfolioAnalyzer(records_by_symbol, start_ts, end_ts, window_days,
+                           cash_symbol=CASH_SYMBOL, cash_scale=1 / CASH_PRICE)
+    need = [r for r in pa.scan_prices()
+            if (not r['has_interval_record'] and r['qty0'] > 0)
+            or (r['open_lag_days'] or 0) > LAG_WARN_DAYS]
+
+    overrides: Dict[str, Dict[str, float]] = {}
+    if need:
+        print(f"\n价格体检：{len(need)} 个标的的估值价格需要确认")
+        for i, r in enumerate(need, 1):
+            reason = ("区间内无记录 ⇒ 期初价与期末价同源，区间浮动只能按 0 计"
+                      if not r['has_interval_record'] else
+                      f"期初价取自 {r['open_date'][:10]}，距区间起点 {r['open_lag_days']:.0f} 天")
+            print(f"  {i:>2}. {pad_string(r['symbol'], 14)}{reason}")
+        print("  输入序号可指定该标的的期初/期末价（可多次；改后自动补录价格记录，回车开始分析）")
+        while True:
+            sel = input("序号: ").strip()
+            if not sel:
+                break
+            if not sel.isdigit() or not (1 <= int(sel) <= len(need)):
+                print("  无效序号")
+                continue
+            r = need[int(sel) - 1]
+            print(f"  【{r['symbol']}】期初持仓 {r['qty0']} 股，当前推断 期初 "
+                  f"{(r['open_price'] or 0):.3f} / 期末 {(r['end_price'] or 0):.3f}")
+            op = input_with_default("    期初价", r['open_price'] or 0.0)
+            ep = input_with_default("    期末价", r['end_price'] or 0.0)
+            overrides[r['symbol']] = {'open': op, 'end': ep}
+            record_price_override(r['symbol'], start_ts, op)
+            record_price_override(r['symbol'], end_ts, ep)
+            print(f"  已补录价格记录：期初 {op:.3f} @ {start_ts[:10]}，期末 {ep:.3f} @ {end_ts[:10]}")
+
+    if overrides:
+        pa = PortfolioAnalyzer(records_by_symbol, start_ts, end_ts, window_days, overrides,
+                               cash_symbol=CASH_SYMBOL, cash_scale=1 / CASH_PRICE)
+    print_portfolio_review(pa.run())
+    input("回车以继续...")
+
+
+def record_price_override(symbol: str, ts: str, price: float) -> None:
+    """为复盘补录一条价格记录（RECORD），下次分析同一区间可直接取用
+
+    与「仅记录价格」菜单写出的记录同构：delta_qty=0，持仓与均价取该时点的既有状态。
+    期初价录在区间起点、期末价录在区间末——resolve_price 取 <= 该时点，故下次能命中；
+    而 state_before 取严格 <，期初持仓的判定不受这条记录影响。
+    """
+    qty, avg_cost = DataManager.get_current_state(symbol, ts)
+    DataManager.add_trade(symbol, {
+        "ts": ts,
+        "side": "RECORD",
+        "price": f"{price:.3f}",
+        "current_qty": qty,
+        "delta_qty": 0,
+        "avg_cost_after": f"{avg_cost:.4f}",
+    })
 
 
 # ===============================
@@ -734,7 +874,7 @@ class FileHandler:
                     if "成交日期" in part: header_indices["date"] = idx
                     elif "成交时间" in part: header_indices["time"] = idx
                     elif "证券名称" in part: header_indices["symbol_name"] = idx
-                    # elif "业务名称" in part: header_indices["business"] = idx
+                    # elif "业务名称" in part: header_indices["business"] = idx # 有些版本的同花顺没有这一项，所以注释掉，以操作为准
                     elif "操作" in part: header_indices["operation"] = idx
                     elif "成交数量" in part: header_indices["quantity"] = idx
                     elif "成交均价" in part: header_indices["price"] = idx
@@ -759,7 +899,8 @@ class FileHandler:
                     symbol_name = symbol_name.split('ETF')[0].strip()
                     symbol_name = symbol_name.replace("创业板", "创")
                     if len(symbol_name)<4:symbol_name = symbol_name+'ETF'
-                if symbol_name == 'GC001' or symbol_name == 'R-001': # 跳过逆回购
+                if 'GC' in symbol_name or 'R' in symbol_name:
+                # if symbol_name == 'GC001' or symbol_name == 'R-001': # 跳过逆回购
                     continue
                 # business_name = parts[header_indices["business"]]
                 operation_name = parts[header_indices["operation"]]
@@ -774,7 +915,7 @@ class FileHandler:
                 if "卖出" in operation_name or "股息入账" in operation_name:
                     side = "SELL"
                     delta_qty = -abs(quantity)
-                elif "买入" in operation_name: # 这里到时候根据红利税补缴的实际操作名再加一个
+                elif "买入" in operation_name or "红利税补缴" in operation_name:
                     side = "BUY"
                     delta_qty = abs(quantity)
                 else:
@@ -858,13 +999,58 @@ class FileHandler:
                 "occur_amount": occur_amount  # 取反：现金变动方向与股票相反
             })
 
-            # 从内存中获取前置状态
-            old_qty, old_avg_cost = 0, 0.0
+            # 从内存中反向扫描一次，取到三样东西：
+            #   上一条 prev_record / 上上条 prev_prev_record（日内反T清零合并前置状态用）
+            #   最近一个非零价格 last_valid_price（红利税补缴/股息入账成交价为0时显示用；
+            #   prev_record 本身也可能是一条价格=0的红利记录，所以要继续往前找）
+            
+            # （等价写法：先切出 earlier 子列表，earlier[-1]/earlier[-2] 取两条记录，
+            #   再用 next() 倒序找首个非零价，逐行更直白；单循环只省一次子列表复制，语义相同）
+            old_qty, old_invest = 0, 0.0
+            prev_record, prev_prev_record = None, None
+            last_valid_price = None
             for existing_record in reversed(block["records"]):
-                if existing_record["ts"] < record["ts"]:
-                    old_qty = int(existing_record["current_qty"])
-                    old_avg_cost = float(existing_record["avg_cost_after"])
+                if existing_record["ts"] >= record["ts"]:
+                    continue
+                # 边界：只跳过"空仓 + 无成交量"的记录（卖光后夹着的股息入账/红利税补缴/RECORD），
+                # 它乘出来恒为0、不携带状态，跳过是为了继续往前找到真正的卖出记录（会对均价有影响但这类记录一般不在盘中，不符合日内反T）；
+                # 持仓非0、同为0成交量的红利记录不能跳——它的均价已被红利分支调整过
+                if int(existing_record["delta_qty"]) == 0 and int(existing_record["current_qty"]) == 0:
+                    if last_valid_price is None and float(existing_record["price"]) != 0:
+                        last_valid_price = existing_record["price"]
+                    continue
+                if prev_record is None:
+                    # 前置状态：qty × avg_cost_after = 变动前总成本，普通路径都从这里接；
+                    # 上一笔是持仓期红利记录时同样适用（取它调整后的均价）
+                    prev_record = existing_record
+                    old_qty = int(prev_record["current_qty"])
+                    old_invest = old_qty * float(prev_record["avg_cost_after"])
+                elif prev_prev_record is None:
+                    # 上上条只在反T清零结转时用到：取 qty × avg_cost_after 作为卖出前总成本（残值基数）；
+                    # 若它是持仓期红利记录也照常参与（均价已含红利/税调整）
+                    prev_prev_record = existing_record
+                if last_valid_price is None and float(existing_record["price"]) != 0:
+                    last_valid_price = existing_record["price"]
+                if prev_prev_record is not None and last_valid_price is not None:
                     break
+
+            # 当天反T清零合并：同日内上一条把持仓卖到清零（均价已为0），直接再买入会把成本重置为买入价；
+            # 此时把上上条状态与卖出残值合并进前置总成本：残值 = 上上条qty*均价 + 卖出量*含费卖价，
+            # 后续统一走同一条成本链。隔日的清零视为真正平仓再重新建仓，不合并。
+            # 空仓期间夹着的成交量为0记录已在扫描时跳过，这里的 prev_record 一定是真正的卖出记录
+            if (old_qty == 0 and prev_record is not None and prev_prev_record is not None
+                    and record["ts"][:10] == prev_record["ts"][:10]
+                    and int(prev_record["delta_qty"]) != 0):
+                prev_delta = int(prev_record["delta_qty"])
+                prev_temp_price = float(prev_record["price"]) 
+                # 含费卖价口径同 temp_price：同批导入的上一条可在 symbol_records 里按（时间戳,变动量）找到并
+                # 用发生金额还原；历史批次的记录没有发生金额，只能退回存储的成交均价（不含费）
+                for sr in symbol_records:
+                    if sr["ts"] == prev_record["ts"] and int(sr["delta_qty"]) == prev_delta:
+                        prev_temp_price = abs(sr["occur_amount"]) / abs(prev_delta)
+                        break
+                old_invest = (int(prev_prev_record["current_qty"]) * float(prev_prev_record["avg_cost_after"])
+                              + prev_delta * prev_temp_price) # 上上条交易的残值
 
             # 判断操作类型
             if old_qty == 0:
@@ -872,19 +1058,23 @@ class FileHandler:
             else:
                 side = record["side"]
 
-            # 计算新状态
-            new_avg_cost, _, _ = calculate_new_state(old_qty, old_avg_cost, delta_qty, temp_price)
+            # 计算新状态（总成本口径；calculate_new_state 由 qty*均价 推总成本，
+            # 清零残值在 qty=0 时表达不了，故此处内联同一公式）
             current_qty = old_qty + delta_qty
-            avg_cost_after = new_avg_cost
+            new_invest = old_invest + delta_qty * temp_price
+            avg_cost_after = new_invest / current_qty if current_qty != 0 else 0.0
 
             # 处理股息入账与红利税补缴业务（成交数量为0，发生金额不为0）
             if abs_qty == 0 and occur_amount != 0:
-                avg_cost_after = old_avg_cost - occur_amount/old_qty if old_qty != 0 else 0
+                avg_cost_after = (old_invest - occur_amount)/old_qty if old_qty != 0 else 0
+
+            # 成交价为0的业务（股息入账/红利税补缴）显示时取上一个有效价格
+            display_price = last_valid_price if original_price == 0 and last_valid_price is not None else record["price"]
 
             block["records"].append({
                 "ts": record["ts"],
                 "side": side,
-                "price": record["price"],
+                "price": display_price,
                 "current_qty": current_qty,
                 "delta_qty": delta_qty,
                 "avg_cost_after": f"{avg_cost_after:.4f}"
@@ -1018,7 +1208,7 @@ class Display:
 - BUY:   买入操作
 - SELL:  卖出操作
 - RESET: 重置品种（重新设置持仓、均价）
-- NEW:   新建品种（首次记录价格）
+- NEW:   建仓买入（从零建立仓位，与 BUY 同样参与匹配与计费）
 - RECORD: 记录价格或微调均价（不进行交易）
 """)
 
@@ -1122,7 +1312,8 @@ class Display:
             round_trip, match_map = None, None
         from irr_analyzer import TradeAnalyzer
         widths = [6, 10, 25, 12, 10, 10, 10, 10, 12]
-        header = Display.pad_string("序号", widths[0]) + Display.pad_string("品种", widths[1]) + Display.pad_string("时间", widths[2]) + Display.pad_string("操作", widths[3]) + Display.pad_string("价格", widths[4]) + Display.pad_string("变动", widths[5]) + Display.pad_string("费用", widths[6]) + Display.pad_string("持有", widths[7]) + Display.pad_string("均价", widths[8])
+        header = Display.pad_string("序号", widths[0]) + Display.pad_string("品种", widths[1]) + Display.pad_string("时间", widths[2]) + Display.pad_string("操作", widths[3])
+        header += Display.pad_string("价格", widths[4]) + Display.pad_string("变动", widths[5]) + Display.pad_string("费用", widths[6]) + Display.pad_string("持有", widths[7]) + Display.pad_string("均价", widths[8])
         print(header)
         print("-" * (sum(widths)))
         # 保留原始列表位置：match_map 配对序号基于原始位置，排序只影响显示顺序
@@ -1144,7 +1335,8 @@ class Display:
             if r["side"] in ("BUY", "SELL", "NEW"):
                 fee_ts = datetime.strptime(r["ts"], "%Y-%m-%d %H:%M:%S")
                 fee_str = f"{TradeAnalyzer.calculate_trade_fee(float(r['price']), abs(int(r['delta_qty'])), r['side'], r['symbol'], fee_ts):.2f}"
-            row = Display.pad_string(i, widths[0]) + Display.pad_string(r['symbol'], widths[1]) + Display.pad_string(r['ts'], widths[2]) + f"{color}{Display.pad_string(side_text, widths[3])}{RESET}" + Display.pad_string(r['price'], widths[4]) + f"{color}{Display.pad_string(r['delta_qty'], widths[5])}{RESET}" + Display.pad_string(fee_str, widths[6]) + Display.pad_string(r['current_qty'], widths[7]) + Display.pad_string(r['avg_cost_after'], widths[8])
+            row = Display.pad_string(i, widths[0]) + Display.pad_string(r['symbol'], widths[1]) + Display.pad_string(r['ts'], widths[2]) + f"{color}{Display.pad_string(side_text, widths[3])}{RESET}" 
+            row += Display.pad_string(r['price'], widths[4]) + f"{color}{Display.pad_string(r['delta_qty'], widths[5])}{RESET}" + Display.pad_string(fee_str, widths[6]) + Display.pad_string(r['current_qty'], widths[7]) + Display.pad_string(r['avg_cost_after'], widths[8])
             print(row)
 
     @staticmethod
@@ -1502,7 +1694,7 @@ def main_menu(symbol: str) -> None:
             avg_cost = input_with_default("首次均价", 0)
             before = input("是否为补录？[Y]: ").upper()
             if before == "Y":
-                ts = get_input_time("首次时间 (如(2026-)01-25 HH:MM(:SS)，留空默认为当前时间；\nt(oday)/仅日期默认为15:30，仅时间默认为今天): ", "15:30:00")
+                ts = get_input_time("首次时间 (如(2026-)01-25 HH:MM(:SS)，留空默认为当前时间；\n  日期可替换成t(oday)，仅日期则时间为15:30，仅时间则日期为今天): ", "15:30:00")
             else:
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
@@ -1679,7 +1871,7 @@ def main_menu(symbol: str) -> None:
 
             elif choice == "5":
                 # 仅记录价格
-                ts = get_input_time("记录时间 (如(2026-)01-25 HH:MM(:SS)，留空默认为当前时间；\nt(oday)/仅日期默认为15:00，仅时间默认为今天): ", "15:00:00")
+                ts = get_input_time("记录时间 (如(2026-)01-25 HH:MM(:SS)，留空默认为当前时间；\n  日期可替换成t(oday)，仅日期则时间为15:00，仅时间则日期为今天): ", "15:00:00")
                 if not ts:
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     # 使用当前状态
@@ -1766,7 +1958,7 @@ def view_export_menu(symbol: str) -> None:
                 sides = {s.strip() for s in side_input.split(",")}
 
             # 时间范围筛选
-            print("下面输入筛选时间(如(2026-)01-25 HH:MM(:SS)，留空表示不限；\nt(oday)/仅日期会补充默认时间，仅时间默认为今天): ")
+            print("下面输入筛选时间(如(2026-)01-25 HH:MM(:SS)，留空表示不限；\n日期可替换成t(oday)，仅日期会补充默认时间，仅时间则日期为今天): ")
             start_ts = get_input_time("起始时间 (默认：00:00:00): ", "00:00:00")
             end_ts = get_input_time("结束时间 (默认：23:59:59): ", "23:59:59")
             sortby, exclude_cash = None, False
@@ -1797,7 +1989,7 @@ def view_export_menu(symbol: str) -> None:
                             filename = "filtered_export"
                         export_to_json(filtered, filename+f"_{datetime.now().strftime('%Y%m%d')}.json")
                 elif action == "2":
-                    delete_input = input("输入要删除的序号，用空格或','分隔，连续区间用'-'连接（如'1 3 5-7'），q取消：").strip()
+                    delete_input = input("输入要删除的序号（可含现金，会自动跳过），用空格或','分隔，连续区间用'-'连接（如'1 3 5-7'），q取消：").strip()
                     if delete_input.lower() == "q":
                         continue
                     indices = InputHelper.parse_batch_indices(delete_input)
@@ -1915,7 +2107,7 @@ def view_export_menu(symbol: str) -> None:
                     print("输入各字段值（留空使用默认值）:")
 
                     # 时间输入
-                    ts = get_input_time("时间 (如(2026-)01-25 HH:MM(:SS)，留空默认为当前时间；\nt(oday)/仅日期默认为15:30，仅时间默认为今天): ","15:30:00")
+                    ts = get_input_time("时间 (如(2026-)01-25 HH:MM(:SS)，留空默认为当前时间；\n  t(oday)/仅日期则时间为15:30，仅时间则日期为今天): ","15:30:00")
                     if not ts:
                         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2109,6 +2301,7 @@ def main():
                 print("-" * 90)
                 print(f"  n. 新建品种      d. 删除品种     c. {'显示' if not show_zero_volume_symbols else '隐藏'}清仓品种")
                 print("  i. 导入交割单    h. 持仓变化     q. 退出程序")
+                print("  r. 组合复盘")
                 print("  backup. 手动备份（每7天自动备份）")
                 print("-" * 90)
 
@@ -2127,6 +2320,9 @@ def main():
                 elif choice.lower() == "h":
                     # 持仓仓位历史分析
                     position_history_interactive()
+                elif choice.lower() == "r":
+                    # 组合复盘（跨品种区间分析）
+                    portfolio_review_interactive()
                 elif choice.lower() == "c":
                     show_zero_volume_symbols = not show_zero_volume_symbols
                 elif choice.lower() == "d":

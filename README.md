@@ -15,6 +15,8 @@
 |------|---------|------|------|
 | [trading_record_manager.py](trading_record_manager.py) | `python trading_record_manager.py` | 主程序：交易记录 CRUD、交割单导入、现金记录自动同步、调整成本法均价、每周自动备份、价格敏感性/持仓历史分析 | 无（纯标准库） |
 | [irr_analyzer.py](irr_analyzer.py) | 由主程序菜单调用 | IRR 分析引擎：做T识别、LIFO 战略匹配、XIRR 求解、手续费分档、胜率/盈亏比/期望值统计 | 无 |
+| [portfolio_analyzer.py](portfolio_analyzer.py) | 由主程序菜单 `r` 调用 | 组合复盘引擎：跨品种区间聚合、组合 XIRR、TWAC、敞口拆分、逐日净值回撤 | 无 |
+| [portfolio_review.py](portfolio_review.py) | 同上 | 组合复盘报告渲染：四节版式、中文宽度对齐、分组折叠 | 无 |
 | [candle_stick_analyzer.py](candle_stick_analyzer.py) | `python candle_stick_analyzer.py <日线文件>` | K线形态统计：开收关系、大阳/阴线后续表现、量价配合、跳空、影线 | pandas, numpy |
 | [5min_volume_analyzer.py](5min_volume_analyzer.py) | `python 5min_volume_analyzer.py <分钟文件> [天数] [-r]` | 分时量能：5分钟线相对量能表格 + 图表 | pandas, numpy, matplotlib |
 | [stock_calculator.py](stock_calculator.py) | `python stock_calculator.py` | 早期简易版：调仓均价计算 | 无 |
@@ -65,8 +67,8 @@
 **方式一：用示例数据体验**（推荐）
 
 ```bash
-git clone https://github.com/Wu-Yue-2021/finance-tools.git
-cd finance-tools
+git clone https://github.com/Wu-Yue-2021/TradePrism.git
+cd TradePrism
 # Windows 复制示例数据
 copy data\trades_example.json data\trades.json
 # Linux/macOS 复制示例数据
@@ -109,13 +111,14 @@ python trading_record_manager.py
 | 时间 | 功能 | 
 |------|--------|
 | 起源 | 由2025年夏开发的单文件调仓计算器 `stock_calculator.py`（算目标均价）演进为 `trading_record_manager.py`；流水数据通过交割单回溯导入 |
-| 2026-01～02 | 调整成本法、交割单导入与【现金】自动同步、CSV/JSON 导出等基础功能成型；irr_analyzer.py 并入（XIRR 求解 + 贡献度统计）；批量删除；|
-| 2026-03 | 分时量能分析 5min_volume_analyzer.py、K线形态分析 candle_stick_analyzer.py 与数据工具 data_utils.py
+| 2026-01～02 | 调整成本法、交割单导入与【现金】自动同步、CSV/JSON 导出等基础功能成型；irr_analyzer.py 并入（XIRR 求解 + 贡献度统计）；批量删除 |
+| 2026-03 | 分时量能分析 5min_volume_analyzer.py、K线形态分析 candle_stick_analyzer.py 与数据工具 data_utils.py |
 | 2026-04 | IRR 支持指定分析区间终点；首次引入做T识别（滑动窗口版）；价格波动敏感性表格 |
 | 2026-05 | 每周自动备份； IRR 报告计算手续费并计入盈亏 |
 | 2026-06 | 做T识别重写为**动态堆匹配**：链表 + 最小堆贪心，支持反T与交叉匹配开关 |
 | 2026-08 | IRR 报告与记录列表增加单独手续费列（费率按券商协议分档）；做T配对降色 + 操作列配对序号显示 |
-| 2026-10 | **XIRR 求解器整体重写**：对数域四层非均匀网格 + 阻尼牛顿 + 二分兜底，50000 组模拟样本定参，支持多解；仓库开源发布（finance-tools），附演示数据与对外 README |
+| 2026-10 | **XIRR 求解器整体重写**：对数域四层非均匀网格 + 阻尼牛顿 + 二分兜底，50000 组模拟样本定参，支持多解；仓库开源发布（TradePrism），附演示数据与对外 README |
+| 2026-10 | **组合复盘**：跨品种区间报告（组合 XIRR 用现金流合并、TWAC 资金效率、策略拆解、标的排名、行为风控）；求解器与指标统计提为模块级纯函数供组合层复用 |
 
 后续方向：持仓/清仓分析、Web Dashboard、行情自动同步（见 [README_CN.md](README_CN.md) 待办事项）。
 
